@@ -1,0 +1,5 @@
+{
+    "name": "Ethereum",
+    "symbol": "ETH",
+    "algorithm": "ethash"
+}
