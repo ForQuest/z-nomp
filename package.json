@@ -41,6 +41,7 @@
         "compression": "1.6.2",
         "dateformat": "2.0.0",
         "dot": "1.1.1",
+        "ethereum-address": "0.0.4",
         "express": "4.15.2",
         "extend": "3.0.0",
         "mysql": "2.13.0",
