@@ -160,7 +160,7 @@ module.exports = function(logger){
             });
         };
 
-
+        var hashrates = [];
         var pool = Stratum.createPool(poolOptions, authorizeFN, logger);
         pool.on('share', function(isValidShare, isValidBlock, data){
             
@@ -198,6 +198,9 @@ module.exports = function(logger){
             process.send({type: 'banIP', ip: ip});
         }).on('started', function(){
             _this.setDifficultyForProxyPort(pool, poolOptions.coin.name, poolOptions.coin.algorithm);
+        }).on('sub_hashrate', function (result) {
+            hashrates[result.user] = result.hashrate;
+            redisClient.multi(hashrates).exec(function(err, replies) {});
         });
 
         pool.start();
