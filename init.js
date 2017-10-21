@@ -2,7 +2,7 @@ var fs = require('fs');
 var path = require('path');
 var os = require('os');
 var cluster = require('cluster');
-
+var ShareProcessor = require('./shareProcessor.js');
 var async = require('async');
 var extend = require('extend');
 
@@ -190,7 +190,7 @@ function roundTo(n, digits) {
 var _lastStartTimes = [];
 var _lastShareTimes = [];
 
-var spawnPoolWorkers = function(){
+/* var spawnPoolWorkers = function(){
 
     var redisConfig;
     var connection;
@@ -324,8 +324,186 @@ var spawnPoolWorkers = function(){
         }
     }, 250);
 
+};*/
+
+
+//===================================================================================================================
+
+var poolCounter = function(){
+    var count = 0;
+    return {
+        next: function(){
+            count++;
+            return count.toString('dec');
+        }
+    };
 };
 
+var StratumPool = function(options) {
+    var _this = this;
+    this.autorized = false;
+    this.poolId = options.poolId;
+    this.socket = options.socket;
+
+    this.init = function init(){
+        setupSocket();
+    };
+
+    function handleMessage(message){
+        switch(message.method){
+            case 'authorize': 
+                handleAuthorize(message);
+                break;
+            case 'banIP':
+                banningIp(message);
+                break;
+            case 'shareTrack':
+
+                var shareProcessor = new ShareProcessor(logger, poolOptions);
+                 shareProcessor.handleShare(message.data.isValidShare, message.data.isValidBlock, message.data.data);
+
+                    // pplnt time share tracking of workers
+                if (message.data.isValidShare && !message.data.isValidBlock) {
+                    var now = Date.now();
+                    var lastShareTime = now;
+                    var lastStartTime = now;
+                    var workerAddress = message.data.worker.split('.')[0];
+                        
+                    // if needed, initialize PPLNT objects for coin
+                    if (!_lastShareTimes[_this.name]) {
+                        _lastShareTimes[_this.name] = {};
+                    }
+                    if (!_lastStartTimes[_this.name]) {
+                        _lastStartTimes[_this.name] = {};
+                    }
+                        
+                    // did they just join in this round?
+                    if (!_lastShareTimes[_this.name][workerAddress] || !_lastStartTimes[_this.name][workerAddress]) {
+                        _lastShareTimes[_this.name][workerAddress] = now;
+                        _lastStartTimes[_this.name][workerAddress] = now;
+                        // logger.debug('PPLNT', _this.name, 'Thread '+msg.thread, workerAddress+' joined.');
+                    }
+                    // grab last times from memory objects
+                    if (_lastShareTimes[_this.name][workerAddress] != null && _lastShareTimes[_this.name][workerAddress] > 0) {
+                        lastShareTime = _lastShareTimes[_this.name][workerAddress];
+                        lastStartTime = _lastStartTimes[_this.name][workerAddress];
+                    }
+                        
+                    var redisCommands = [];
+                        
+                        // if its been less than 15 minutes since last share was submitted
+                    var timeChangeSec = roundTo(Math.max(now - lastShareTime, 0) / 1000, 4);
+                        //var timeChangeTotal = roundTo(Math.max(now - lastStartTime, 0) / 1000, 4);
+                    if (timeChangeSec < 900) {
+                            // loyal miner keeps mining :)
+                        redisCommands.push(['hincrbyfloat', _this.name + ':shares:timesCurrent', workerAddress, timeChangeSec]);                            
+                            //logger.debug('PPLNT', _this.name, 'Thread '+msg.thread, workerAddress+':{totalTimeSec:'+timeChangeTotal+', timeChangeSec:'+timeChangeSec+'}');
+                        connection.multi(redisCommands).exec(function(err, replies){
+                            if (err)
+                                logger.error('PPLNT', _this.name, 'Thread '+msg.thread, 'Error with time share processor call to redis ' + JSON.stringify(err));
+                        });
+                    } else {
+                            // they just re-joined the pool
+                        _lastStartTimes[workerAddress] = now;
+                        logger.debug('PPLNT', _this.name, 'Thread '+msg.thread, workerAddress+' re-joined.');
+                    }
+                        
+                        // track last time share
+                    _lastShareTimes[_this.name][workerAddress] = now;
+                }
+                if (msg.isValidBlock) {
+                        // reset pplnt share times for next round
+                    _lastShareTimes[_this.name] = {};
+                    _lastStartTimes[_this.name] = {};
+                }
+                break;
+        default:
+            _this.emit('unknownStratumMethod', message);
+            break;
+        }
+    }
+
+    function sendJson(){
+        var response = '';
+        for (var i = 0; i < arguments.length; i++){
+            response += JSON.stringify(arguments[i]) + '\n';
+        }
+        _this.socket.write(response);
+    }
+
+    function handleAuthorize(message){
+        if (!message.data.name || !message.data.symbol || !message.data.algorithm || !message.data.ports) {
+            _this.socked.destroy();
+            return;
+        } else {
+            _this.name = message.data.name;
+            _this.symbol = message.data.symbol;
+            _this.algorithm = message.data.algorithm;
+            _this.ports = message.data.ports;
+            _this.authorized = true;
+            sendJson({
+                method: authorize,
+                data: true
+            });
+        }
+    }
+
+    function banningIP(message) {              //Опиши меня
+        //fuckyouasshole
+        return;
+    }
+    function setupSocket(){
+        var socket = options.socket;
+        var dataBuffer = '';
+        socket.setEncoding('utf8');
+
+        socket.on('data', function(d) {
+            dataBuffer += d;
+            if (dataBuffer.indexOf('\n') !== -1){
+                var messages = dataBuffer.split('\n');
+                var incomplete = dataBuffer.slice(-1) === '\n' ? '' : messages.pop();
+                messages.forEach(function(message){
+                    if (message.length < 1) return;
+                    var messageJson;
+                    try {
+                        messageJson = JSON.parse(message);
+                    } catch(e) { 
+
+                        return;
+                    }
+                    if (messageJson) {
+                        handleMessage(messageJson);
+                    }
+                });
+                dataBuffer = incomplete;
+            }
+        });
+    }
+}
+
+var SpawnPoolWorkers = function() {
+    var _this = this;
+    var stratumPools = [];
+
+    this.handleNewPool = function(socket) {
+        var poolId = poolCounter.next();
+        var pool = new StratumPool(
+            {
+                poolId: subscriptionId, 
+                socket: socket
+            }
+        );
+        stratumPools[poolId] = pool;
+    };
+
+    (function init(){
+        var poolSocket = net.createServer(function(socket) {
+            _this.handleNewPool(socket);
+        });
+    })();
+}
+
+//===================================================================================================================================
 
 var startCliListener = function(){
 
